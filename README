@@ -1,0 +1,48 @@
+Gooey is an experimental Go code rewriter intended to demonstrate a 
+per-variable syntax for short declarations. The proposed syntax allows 
+colon-prefixed identifier on the left side of regular assignments. Look at 
+the source for examples.
+See https://github.com/golang/go/issues/377
+
+Can be installed with: go get github.com/pam4/gooey
+
+CAVEATS
+
+- Multi-variable assignments in for/if/switch *init* statements must either 
+contain only declarations or none:
+
+if :n, :err = f(); err != nil { // ok
+if n, err = f(); err != nil {   // ok
+if _, :err = f(); err != nil {  // ok (":_" is not accepted)
+if :n, err = f(); err != nil {  // error: mixed assignment
+
+The same rewriting approach used elsewhere cannot be used for init 
+statement, so they are just translated back to "=" or ":=", or error out if 
+they are mixed. (In init statements a ":=" always produces new instances of 
+all variables because we are at the beginning of the scope). I think the 
+alternate syntax is still worth it because it is more clear.
+
+- No effort was made to avoid collisions of generated names with existing 
+identifiers. Don't use identifiers beginning with "GOOEY_COLON_" or 
+"GOOEY_TEMP_".
+
+- Mixed assignments are translated using temporary variables, in a way that 
+changes the order of evaluation to right-hand side first. Performance may 
+also be affected, but I don't think it would be an issue in most cases.
+
+- Error descriptions may not be accurate in some cases, and reported column 
+positions may be wrong, but at least it is never supposed to silently 
+produce a wrong result.
+
+USAGE
+
+usage: gooey [flags] [path ...]
+
+Gooey processes its file arguments, and any *.goo files contained in its
+directory arguments. If no path is specified, the current directory is
+assumed. If -fmt is true, input files are reformatted in place. If -gen is
+true, they are translated and written to corresponding .go files.
+
+  -fmt	reformat input
+  -gen	generate Go code (default true)
+  -std	read stdin and write to stdout

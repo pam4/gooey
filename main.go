@@ -1,0 +1,206 @@
+// Copyright 2018 Paolo Machiavelli. All rights reserved.
+// Use of this source code is governed by the BSD 3-Clause
+// license that can be found in the LICENSE file.
+
+package main
+
+import (
+	"bytes"
+	"flag"
+	"fmt"
+	"go/ast"
+	"go/printer"
+	"go/scanner"
+	"go/token"
+	"io/ioutil"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+func usage() {
+	fmt.Fprint(os.Stderr, `usage: gooey [flags] [path ...]
+
+Gooey processes its file arguments, and any *.goo files contained in its
+directory arguments. If no path is specified, the current directory is
+assumed. If -fmt is true, input files are reformatted in place. If -gen is
+true, they are translated and written to corresponding .go files.
+
+  -fmt	reformat input
+  -gen	generate Go code (default true)
+  -std	read stdin and write to stdout
+`)
+}
+
+var (
+	_fmt = flag.Bool("fmt", false, "")
+	_gen = flag.Bool("gen", true, "")
+	_std = flag.Bool("std", false, "")
+)
+
+const (
+	cprefTag = "GOOEY_COLON_"
+	tempTag  = "GOOEY_TEMP_"
+)
+
+func main() {
+	flag.Usage = usage
+	flag.Parse()
+	if *_std {
+		processStdin()
+		return
+	}
+	var args = flag.Args()
+	if len(args) == 0 {
+		args = []string{"."}
+	}
+	for _, arg := range args {
+		var info, err = os.Stat(arg)
+		if err != nil {
+			fatal(err)
+		}
+		if !info.IsDir() {
+			info, err = os.Lstat(arg)
+			if err != nil {
+				fatal(err)
+			}
+			var mode = info.Mode()
+			if !mode.IsRegular() {
+				fatalf("%s is not a regular file", arg)
+			}
+			processFile(arg, mode)
+			continue
+		}
+		GOOEY_TEMP_0, GOOEY_TEMP_1 := os.Open(arg)
+		var dir = GOOEY_TEMP_0
+		err = GOOEY_TEMP_1
+		if err != nil {
+			fatal(err)
+		}
+		GOOEY_TEMP_2, GOOEY_TEMP_3 := dir.Readdirnames(-1)
+		var names = GOOEY_TEMP_2
+		err = GOOEY_TEMP_3
+		if err != nil {
+			fatal(err)
+		}
+		dir.Close()
+		for _, n := range names {
+			if !strings.HasSuffix(n, ".goo") {
+				continue
+			}
+			var path = filepath.Join(arg, n)
+			info, err = os.Lstat(path)
+			if err != nil {
+				fatal(err)
+			}
+			var mode = info.Mode()
+			if !mode.IsRegular() {
+				logf("%s is not a regular file: skipping", path)
+				continue
+			}
+			processFile(path, mode)
+		}
+	}
+}
+
+func processStdin() {
+	var src, err = ioutil.ReadAll(os.Stdin)
+	if err != nil {
+		fatal(err)
+	}
+	var fmt, gen = processCode("stdin", src)
+	if *_fmt {
+		_, err = os.Stdout.Write(fmt)
+	} else if *_gen {
+		_, err = os.Stdout.Write(gen)
+	}
+	if err != nil {
+		fatal(err)
+	}
+}
+
+func processFile(path string, mode os.FileMode) {
+	var src, err = ioutil.ReadFile(path)
+	if err != nil {
+		fatal(err)
+	}
+	var fmt, gen = processCode(path, src)
+	if *_fmt {
+		writeFile(path, mode, fmt)
+	}
+	if *_gen {
+		writeFile(strings.TrimSuffix(path, ".goo")+".go", mode, gen)
+	}
+}
+
+// writeFile writes data in a temp file and moves it over path.
+func writeFile(path string, mode os.FileMode, data []byte) {
+	var file, err = ioutil.TempFile(filepath.Dir(path), "tmp")
+	if err != nil {
+		fatal(err)
+	}
+	defer file.Close()
+	err = file.Chmod(mode.Perm())
+	if err != nil {
+		logf("%v\n", err)
+	}
+	_, err = file.Write(data)
+	if err != nil {
+		fatal(err)
+	}
+	err = os.Rename(file.Name(), path)
+	if err != nil {
+		fatal(err)
+	}
+}
+
+// processCode parses and translates src, and returns formatted
+// and/or translated code according to the respective flags.
+func processCode(name string, src []byte) (fmt, gen []byte) {
+	var fset = token.NewFileSet()
+	var file, err = parseFile(fset, name, src)
+	if err != nil {
+		fatal(err)
+	}
+	ast.SortImports(fset, file)
+	if *_fmt {
+		fmt = print2buf(fset, file)
+	}
+	err = xlateFile(fset, file)
+	if err != nil {
+		fatal(err)
+	}
+	if *_gen {
+		gen = print2buf(fset, file)
+	}
+	return
+}
+
+// same config used by go/format
+var format = printer.Config{
+	Mode:     printer.UseSpaces | printer.TabIndent,
+	Tabwidth: 8,
+}
+
+func print2buf(fset *token.FileSet, file *ast.File) []byte {
+	var buf bytes.Buffer
+	var err = format.Fprint(&buf, fset, file)
+	if err != nil {
+		fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func logf(format string, a ...interface{}) {
+	fmt.Fprintf(os.Stderr, format, a...)
+}
+
+func fatalf(format string, a ...interface{}) {
+	logf(format, a...)
+	os.Exit(1)
+}
+
+func fatal(err error) {
+	scanner.PrintError(os.Stderr, err)
+	os.Exit(1)
+}
